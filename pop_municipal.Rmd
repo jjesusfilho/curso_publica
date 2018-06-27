@@ -1,0 +1,115 @@
+---
+title: "Visualizando dados municipais com o R"
+author: "José de Jesus Filho"
+date: "6/27/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message = FALSE)
+```
+
+## Visualizando dados municipais
+
+Nesta breve postagem irei mostrar como visualizar indicadores dos municípios brasileiros usando o R. A primeira coisa a fazer é instalar o pacote da Associação Brasileira de Jurimetria chamado `brcities`
+```{r,eval=FALSE}
+devtools::install_github("abjur/brcities")
+```
+
+O propósito do pacote `brcities` é baixar alguns indicadores municipais do Instituto Brasileiro de Geografia e Estatística. Se você quiser saber mais sobre esse pacote, leia o readme dele: [brcities](https://github.com/ajur/brcities).
+
+Agora que o instalamos, iremos carregá-lo juntamente com os pacotes do tidyverse. Se você não tem os pacotes do tidyverse, sugiro instalá-los, preferivelmente a versão em desenvolvimento: [tidyverse](https://github.com/tidyverse/tidyverse). Igualmente, necessitaremos do pacote `sf`, muito útil para a manipulação de dados espaciais e do pacote leaflet, para visualização interativa.
+
+```{r,message=F,warning=FALSE}
+library(brcities)
+library(sf)
+library(tidyverse)
+library(leaflet)
+```
+
+Agora iremos carregar a população estimada do estado do Pernambuco. Para tanto, utilizamos a função br_city_indicators. Esta função não somente baixa os dados autalizados do IBGE, como também junta nela dados como latitude e longitude. 
+
+```{r}
+pop_pe<-br_city_indicators(uf="pe",indicators=29171)
+```
+
+O próximo passo é baixar o mapa do estado do Pernambuco. Você encontra este e outros mapas no seguinte link: [IBGE](ftp://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2015/Brasil/BR/BR.zip). O procedimento a seguir baixa, expande e importa o polígono. Depois de expandir o arquivo ".zip", você notará que seis arquivos são extraídos, todos com o mesmo nome, mas com diferentes extensões. A função `st_read()` do pacote `sf` é inteligente o suficiente converter todos esses arquivos em um único objeto conhecido como `simple feature`, você só tem de indicar qual deles é o shapefile, isto é, aquele com extensão `.shp`.
+
+Há um outro [link](ftp://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2016/UFs/), o qual permite baixar os shapes dos municípios, mas a última atualização é de 2016
+
+```{r,eval=FALSE,message=FALSE,warning=FALSE}
+download.file("ftp://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2015/Brasil/BR/BR.zip","br.zip")
+unzip("br.zip")
+mapa_pe<-st_read("26MUE250GC_SIR.shp") %>% 
+  filter(str_detect(CD_GEOCMU,"^26"))
+```
+
+Temos agora de juntar esses dois arquivos num só. Se você rodar a função `glimpse()` nos dois, verá que eles têm uma veriável comum, que é o código do IBGE, mas com nomes diferentes. Além disso, um deles é fator e outro é numérico e num deles o código tem seis digitos e no outro, sete digitos. Ademais, as estimativas populacionais estão em formato caractere, temos de convertê-las para números. O procedimento toma conta desses ajustes e junta os arquivos.
+
+```{r,eval=FALSE}
+mapa_pe<-mapa_pe %>% 
+  mutate(CD_GEOCMU=CD_GEOCMU %>%
+           as.character() %>%
+           as.numeric() %>%
+           divide_by(10) %>% 
+           floor()) %>% 
+  left_join(pop_pe,by=c("CD_GEOCMU" = "city_code")) %>% 
+  rename(pop_2016=populacao_estimadares.2016,pop_2017=populacao_estimadares.2017) %>% 
+  mutate_at(c("pop_2016","pop_2017"),as.numeric)
+  
+```
+
+```{r,echo=FALSE}
+library(here)
+mapa_pe<-readRDS("data/mapa_pe.rds")
+```
+
+
+Pronto, agora é só plotar o mapa usando o pacote ggplot2, o qual integra o tidyverse.
+
+```{r}
+ggplot() +
+  geom_sf(data = mapa_pe, aes(fill = pop_2017)) +
+  scale_fill_viridis_c(name="População em 2017") +
+  labs(title="População dos municípios de Pernambuco em 2017",caption="Fonte: IBGE")+
+  theme_minimal()
+```
+
+Se você quiser deixar seu mapa interativo para as pessoas passarem o mouse sobre o  município e ver a população, o pacote `leafleat` vem a calhar. 
+
+```{r}
+
+quantis <- quantile(mapa_pe$pop_2017)
+pal <- colorBin("YlOrRd", domain = mapa_pe$pop_2017, bins = quantis)
+
+labels <- sprintf(
+  "<strong>%s</strong><br/> população: %g",
+  mapa_pe$city_name, mapa_pe$pop_2017
+) %>% lapply(htmltools::HTML)
+
+leaflet(mapa_pe) %>%
+  fitBounds(-41.358336,  -9.482897, -32.390914 , -3.828719) %>% 
+  addTiles() %>% 
+  addPolygons(
+    fillColor = ~pal(pop_2017),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto")) %>%
+  addLegend(pal = pal, values = ~pop_2017, opacity = 0.7, title = NULL,
+    position = "bottomright",labFormat = labelFormat(big.mark = "."))
+```
+
+
